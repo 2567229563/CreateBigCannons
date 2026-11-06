@@ -1,6 +1,7 @@
 package rbasamoyai.createbigcannons;
 
 import java.util.List;
+import java.util.function.Consumer;
 
 import javax.annotation.Nullable;
 
@@ -171,5 +172,22 @@ public class CBCCompatTransformers {
      * @param timeFraction fraction of the tested segment at which the hit occurred
      */
     public record ProjectileClipResult(BlockHitResult hitResult, double timeFraction) {}
+
+    private static final List<Consumer<Level>> EXPLOSION_PREPARERS = new ReferenceArrayList<>();
+
+    public static void addExplosionPreparer(Consumer<Level> preparer) {
+        EXPLOSION_PREPARERS.add(preparer);
+    }
+
+    /**
+     * Gives compat mods a chance to refresh their state before a CBC explosion is processed. Sable updates a
+     * sub-level's pose during its physics step but only refreshes the cached global bounding box at the start of
+     * the tick; refreshing it here keeps explosion ray queries in sync with the pose that moves the structure.
+     */
+    public static void prepareExplosion(Level level) {
+        for (Consumer<Level> preparer : EXPLOSION_PREPARERS) {
+            preparer.accept(level);
+        }
+    }
 
 }

@@ -112,6 +112,25 @@ public class SableCompat {
         CBCCompatTransformers.addProjectileFallHandler(new SableCannonProjectileCompat.ProjectileFallHandler());
         CBCCompatTransformers.addProjectileGroundingHandler(SableCompat::groundProjectile);
         CBCCompatTransformers.addProjectileClipHandler(SableCompat::clipProjectile);
+        CBCCompatTransformers.addExplosionPreparer(SableCompat::refreshSubLevelBounds);
+    }
+
+    /**
+     * Sable refreshes a sub-level's global bounding box at the start of its tick, before the physics step that
+     * moves it. Explosion ray queries use that cached box, so at high speed the leading edge of a moving
+     * structure lies outside the box and the explosion passes through it. Refresh the box immediately before a
+     * CBC explosion so the box and the current pose describe the same position.
+     */
+    public static void refreshSubLevelBounds(Level level) {
+        if (!(level instanceof ServerLevel serverLevel))
+            return;
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+        if (container == null)
+            return;
+        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
+            if (!subLevel.isRemoved())
+                subLevel.updateBoundingBox();
+        }
     }
 
     /**

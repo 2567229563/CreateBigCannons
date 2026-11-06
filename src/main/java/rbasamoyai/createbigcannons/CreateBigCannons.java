@@ -88,6 +88,7 @@ public class CreateBigCannons {
         boolean canDamageTerrain = ProjectileDamageHooks.canDamageTerrain(level, BlockPos.containing(explosion.center()));
         explosion.setCanDamageTerrain(canDamageTerrain);
 
+        CBCCompatTransformers.prepareExplosion(level);
 		explosion.explode();
 
         if (!canDamageTerrain){
