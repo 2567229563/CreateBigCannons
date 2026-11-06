@@ -190,6 +190,29 @@ public abstract class AbstractCannonProjectile extends Projectile implements IEn
 			.add(0.0d, this.getGravity(), 0.0d);
 	}
 
+	/**
+	 * Sweeps an entity's bounding box over its movement for the current tick. A projectile only checks the
+	 * target's current box otherwise, so two fast-moving objects can pass through each other between ticks.
+	 */
+	private static AABB sweptEntityBounds(Entity entity) {
+		AABB box = entity.getBoundingBox();
+		Vec3 motion = entity.getDeltaMovement();
+		if (entity.tickCount > 1) {
+			Vec3 actualMotion = new Vec3(entity.getX() - entity.xOld, entity.getY() - entity.yOld, entity.getZ() - entity.zOld);
+			if (actualMotion.lengthSqr() > motion.lengthSqr())
+				motion = actualMotion;
+		}
+		if (motion.lengthSqr() < 1.0E-7d || motion.lengthSqr() > 1024.0d)
+			return box;
+		return new AABB(
+			Math.min(box.minX, box.minX + motion.x),
+			Math.min(box.minY, box.minY + motion.y),
+			Math.min(box.minZ, box.minZ + motion.z),
+			Math.max(box.maxX, box.maxX + motion.x),
+			Math.max(box.maxY, box.maxY + motion.y),
+			Math.max(box.maxZ, box.maxZ + motion.z));
+	}
+
 	public Vec3 getOrientation() {
 		return new Vec3(this.entityData.get(ORIENTATION));
 	}
@@ -240,11 +263,21 @@ public abstract class AbstractCannonProjectile extends Projectile implements IEn
 				break;
 			}
 
-			Vec3 currentEnd = currentStart.add(trajectory.scale(t));
-			BlockHitResult blockResult = this.level().clip(new ClipContext(currentStart, currentEnd, ClipContext.Block.COLLIDER,
+			Vec3 rayEnd = currentStart.add(trajectory.scale(t));
+			BlockHitResult blockResult = this.level().clip(new ClipContext(currentStart, rayEnd, ClipContext.Block.COLLIDER,
 				ClipContext.Fluid.NONE, this));
-			if (blockResult.getType() != HitResult.Type.MISS)
+			Vec3 currentEnd = rayEnd;
+			CBCCompatTransformers.ProjectileClipResult compatClip = CBCCompatTransformers.clipProjectile(this.level(), this,
+				currentStart, rayEnd, t, blockResult);
+			if (compatClip != null) {
+				// The compat hit may be behind the projectile's current world position because the target moved into
+				// the shell. Keep the trajectory parameterized in world space so the rest of the clipping loop still
+				// advances forwards.
+				blockResult = compatClip.hitResult();
+				currentEnd = currentStart.lerp(rayEnd, compatClip.timeFraction());
+			} else if (blockResult.getType() != HitResult.Type.MISS) {
 				currentEnd = CBCCompatTransformers.transformVec3(this.level(), blockResult.getLocation());
+			}
 			if (p == 0) {
 				BlockHitResult fluidResult = this.level().clip(new ClipContext(currentStart, currentEnd, ClipContext.Block.OUTLINE, ClipContext.Fluid.ANY, this));
 				if (fluidResult.getType() != HitResult.Type.MISS) {
@@ -277,7 +310,8 @@ public abstract class AbstractCannonProjectile extends Projectile implements IEn
 				if (projCtx.hasHitEntity(target) || !this.canHitEntity(target))
 					continue;
 				AABB targetBB = target.getBoundingBox();
-				if (targetBB.intersects(thisBB) || targetBB.inflate(reach).clip(endStart, endCopy).isPresent())
+				AABB sweptTargetBB = sweptEntityBounds(target).inflate(reach);
+				if (targetBB.intersects(thisBB) || sweptTargetBB.clip(endStart, endCopy).isPresent())
 					projCtx.addEntity(target);
 			}
             for (Entity e : projCtx.hitEntities())

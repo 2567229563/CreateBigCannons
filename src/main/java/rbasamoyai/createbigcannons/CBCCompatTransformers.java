@@ -2,6 +2,8 @@ package rbasamoyai.createbigcannons;
 
 import java.util.List;
 
+import javax.annotation.Nullable;
+
 import it.unimi.dsi.fastutil.objects.ReferenceArrayList;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
@@ -130,5 +132,44 @@ public class CBCCompatTransformers {
     public interface ProjectileGroundingHandler {
         boolean groundProjectile(Level level, AbstractCannonProjectile projectile, BlockPos impactPos);
     }
+
+    private static final List<ProjectileClipHandler> PROJECTILE_CLIP = new ReferenceArrayList<>();
+
+    public static void addProjectileClipHandler(ProjectileClipHandler handler) {
+        PROJECTILE_CLIP.add(handler);
+    }
+
+    /**
+     * Compat hook for an additional projectile-vs-world clip test. This is used for moving physics structures,
+     * whose movement is not represented by {@link Level#clip(net.minecraft.world.level.ClipContext)} because it
+     * only tests the ray against the target's pose at the time of the query.
+     *
+     * @param remainingTickFraction fraction of the projectile's tick that is still left at {@code start}
+     * @param currentHit            the result of the regular level clip, possibly a miss
+     * @return a hit that is closer than {@code currentHit}, or {@code null} to keep the regular result
+     */
+    @Nullable
+    public static ProjectileClipResult clipProjectile(Level level, AbstractCannonProjectile projectile, Vec3 start, Vec3 end,
+                                                      double remainingTickFraction, BlockHitResult currentHit) {
+        for (ProjectileClipHandler handler : PROJECTILE_CLIP) {
+            ProjectileClipResult result = handler.clip(level, projectile, start, end, remainingTickFraction, currentHit);
+            if (result != null)
+                return result;
+        }
+        return null;
+    }
+
+    @FunctionalInterface
+    public interface ProjectileClipHandler {
+        @Nullable
+        ProjectileClipResult clip(Level level, AbstractCannonProjectile projectile, Vec3 start, Vec3 end,
+                                  double remainingTickFraction, BlockHitResult currentHit);
+    }
+
+    /**
+     * @param hitResult    a hit in the target's local coordinate system, as returned by compat mods
+     * @param timeFraction fraction of the tested segment at which the hit occurred
+     */
+    public record ProjectileClipResult(BlockHitResult hitResult, double timeFraction) {}
 
 }

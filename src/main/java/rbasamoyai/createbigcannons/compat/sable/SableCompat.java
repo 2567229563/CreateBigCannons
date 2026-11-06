@@ -7,14 +7,18 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
+import javax.annotation.Nullable;
+
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.physics.force.ForceGroup;
 import dev.ryanhcode.sable.api.physics.force.QueuedForceGroup;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
 import dev.ryanhcode.sable.companion.math.JOMLConversion;
 import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.mixinterface.clip_overwrite.ClipContextExtension;
 import dev.ryanhcode.sable.mixinterface.clip_overwrite.LevelPoseProviderExtension;
 import dev.ryanhcode.sable.neoforge.event.ForgeSablePrePhysicsTickEvent;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
@@ -22,10 +26,13 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
 import net.neoforged.bus.api.IEventBus;
 import rbasamoyai.createbigcannons.CBCCompatTransformers;
 import rbasamoyai.createbigcannons.config.CBCConfigs;
@@ -104,6 +111,82 @@ public class SableCompat {
         CBCCompatTransformers.addNormalTransformer(new SableCannonProjectileCompat.NormalTransformer());
         CBCCompatTransformers.addProjectileFallHandler(new SableCannonProjectileCompat.ProjectileFallHandler());
         CBCCompatTransformers.addProjectileGroundingHandler(SableCompat::groundProjectile);
+        CBCCompatTransformers.addProjectileClipHandler(SableCompat::clipProjectile);
+    }
+
+    /**
+     * Sable updates a sub-level's pose during the physics step, but its cached global bounding box is only
+     * refreshed at the start of the sub-level tick. A fast shell can therefore be tested against a pose and a
+     * bounding box that describe two different positions, and {@link Level#clip} misses the leading edge of a
+     * fast-moving structure entirely. This performs the same clip in the sub-level's local space, using the
+     * structure's movement over the remainder of the tick as the relative displacement between the shell and
+     * the structure.
+     */
+    @Nullable
+    public static CBCCompatTransformers.ProjectileClipResult clipProjectile(Level level, AbstractCannonProjectile projectile,
+                                                                            Vec3 start, Vec3 end, double remainingTickFraction,
+                                                                            BlockHitResult currentHit) {
+        if (!(level instanceof ServerLevel serverLevel))
+            return null;
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+        if (container == null)
+            return null;
+        List<ServerSubLevel> subLevels = container.getAllSubLevels();
+        if (subLevels.isEmpty())
+            return null;
+
+        double nearestDistance = Double.MAX_VALUE;
+        if (currentHit.getType() != HitResult.Type.MISS) {
+            Vec3 currentLoc = CBCCompatTransformers.transformVec3(level, currentHit.getLocation());
+            nearestDistance = start.distanceTo(currentLoc);
+        }
+
+        CBCCompatTransformers.ProjectileClipResult result = null;
+        double reach = projectile.getBbWidth() * 0.5d + 0.5d;
+        AABB pathBounds = new AABB(start, end).inflate(reach);
+
+        for (ServerSubLevel subLevel : subLevels) {
+            if (subLevel.isRemoved())
+                continue;
+            Pose3dc pose = subLevel.logicalPose();
+            Pose3dc lastPose = subLevel.lastPose();
+            Vec3 fullDisplacement = new Vec3(pose.position().x() - lastPose.position().x(),
+                pose.position().y() - lastPose.position().y(),
+                pose.position().z() - lastPose.position().z());
+            AABB subLevelBounds = toAabb(subLevel.boundingBox());
+            AABB sweptBounds = subLevelBounds.expandTowards(fullDisplacement).expandTowards(fullDisplacement.reverse());
+            if (!sweptBounds.inflate(reach).intersects(pathBounds))
+                continue;
+
+            Vec3 displacement = fullDisplacement.scale(remainingTickFraction);
+            Vec3 localStart = pose.transformPositionInverse(start.add(displacement));
+            Vec3 localEnd = pose.transformPositionInverse(end);
+            double localLength = localStart.distanceTo(localEnd);
+            if (localLength < 1.0E-4d)
+                continue;
+
+            ClipContext clipContext = new ClipContext(localStart, localEnd, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE,
+                CollisionContext.of(projectile));
+            ((ClipContextExtension) clipContext).sable$setDoNotProject(true);
+            BlockHitResult hitResult = level.clip(clipContext);
+            if (hitResult.getType() == HitResult.Type.MISS)
+                continue;
+            if (Sable.HELPER.getContaining(level, hitResult.getBlockPos()) != subLevel)
+                continue;
+
+            double fraction = Math.max(1.0E-4d, Math.min(1.0d, localStart.distanceTo(hitResult.getLocation()) / localLength));
+            Vec3 worldHit = CBCCompatTransformers.transformVec3(level, hitResult.getLocation());
+            double distance = start.distanceTo(worldHit);
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                result = new CBCCompatTransformers.ProjectileClipResult(hitResult, fraction);
+            }
+        }
+        return result;
+    }
+
+    private static AABB toAabb(BoundingBox3dc bounds) {
+        return new AABB(bounds.minX(), bounds.minY(), bounds.minZ(), bounds.maxX(), bounds.maxY(), bounds.maxZ());
     }
 
     public static void recoilCannon(Level level, Vec3 pos, Vec3 recoil) {
